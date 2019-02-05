@@ -7,52 +7,59 @@ enum DbType {
   Worker
 }
 
-// //q is the query
-// function findMainDbFromReference(r: sqlAst.RelationReference, q: sqlAst.SelectionUnit) {
-//     if (r.relationName) {
-//       if (this.isMain(q.baseRelation.relationName)) {
-        
-//       // share with worker
-//       // delete existing
-//       // insert all
-//         }
-//     } else {
-//     // subquery 
-//         r.subquery.compositeSelections.map(s => {
-//         findMainDb(s.relation);
-//         })
-//     return r.relationName;
-//   }
-// }
+//given a relation reference, will return the relation in the main db
+//returns null if there is no relation in main db
+export function findMainDbFromReference(r: sqlAst.RelationReference) {
+    if (r.relationName) {
+      if (this.isMain(r.relationName)) {
+        return r;
+        }
+    } else {
+    // subquery
+        const compsels = r.subquery.compositeSelections;
+        for(var c of compsels) {
+          const selUnit = c.relation;
+          return this.findMainDbFromReference(selUnit.baseRelation);
+        }
+      return;
+  }
+}
 
 //return a list of table names in this query that are in the main db
 //this way, in QueryExecutor, we can copy the tables over to the worker
+
+
+//TODO (jan 29): implement recursion of subqueries/joins
+//test recursive implementation, so come up with multiple test cases
 export function findMainDb(selection: sqlAst.SelectionUnit) {
     var rels: sqlAst.RelationReference[] = [];
     // first look at baseRelation
     const r = selection.baseRelation;
-    if (this.isMain(r.relationName)) {
-        rels.push()
+    //TODO (feb 5) check if a relation is already in the worker before adding it
+    rels.push(this.findMainDbFromReference(r));
+    //go through join AST relations and do the same
+    var joins = selection.joinClauses;
+    for(var j of joins) {
+      rels.push(this.findMainDbFromReference(j.relation));
     }
-    selection.joinClauses.map(c => rels.push(c.relation))
-    // do the same for join
     return rels;
 }
 
-class queryExecutor {
+class QueryExecutor {
   mainDb: Database;
-  workerDb: Database;
+  workerDb: Worker;
   metaData: {[index: string]: DbType};
-  constructor(workerUrl: string) {
+  constructor(metaData: {[index: string]: DbType}) {
+    this.metaData = metaData;
     this.mainDb = new Database();
-    this.workerDb = new Worker(workerUrl);
+    //hardcode the location of the url of worker.sql.js; look at example in diel.ts
+    this.workerDb = new Worker(`../node_modules/sql.js/js/worker.sql.js`);
     //add in the tables to the respective DBs now
-    //maybe pass metadata into the constructor
 
-    this.metaData = {
-      "t1": DbType.Main,
-      "t2": DbType.Worker
-    };
+    // this.metaData = {
+    //   "t1": DbType.Main,
+    //   "t2": DbType.Worker
+    // };
   }
   isMain(rName: string) {
     return this.metaData[rName] == DbType.Main;
