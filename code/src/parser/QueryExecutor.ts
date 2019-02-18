@@ -8,7 +8,7 @@ enum DbType {
 }
 
 //given a relation reference, will return the relation in the main db
-//returns null if there is no relation in main db
+//returns nothing if there is no relation in main db
 export function findMainDbFromReference(r: sqlAst.RelationReference) {
     if (r.relationName) {
       if (this.isMain(r.relationName)) {
@@ -31,16 +31,23 @@ export function findMainDbFromReference(r: sqlAst.RelationReference) {
 
 //TODO (jan 29): implement recursion of subqueries/joins
 //test recursive implementation, so come up with multiple test cases
-export function findMainDb(selection: sqlAst.SelectionUnit) {
+//including list of tables in worker table
+export function findMainDb(selection: sqlAst.SelectionUnit, workerTables: sqlAst.RelationReference[]) {
     var rels: sqlAst.RelationReference[] = [];
     // first look at baseRelation
     const r = selection.baseRelation;
     //TODO (feb 5) check if a relation is already in the worker before adding it
-    rels.push(this.findMainDbFromReference(r));
+    var ref = this.findMainDbFromReference(r);
+    if (!workerTables.includes(ref)) {
+      rels.push(ref);
+    }
     //go through join AST relations and do the same
     var joins = selection.joinClauses;
     for(var j of joins) {
-      rels.push(this.findMainDbFromReference(j.relation));
+      ref = this.findMainDbFromReference(j.relation);
+      if (!workerTables.includes(ref) && !rels.includes(ref)) {
+        rels.push(ref);
+      }
     }
     return rels;
 }
@@ -73,11 +80,14 @@ class QueryExecutor {
         action: "exec",
         sql: sql_code
       })
-    }
+    };
+
+    //use metadata to get list of DBs in worker
+    var workerTables: sqlAst.RelationReference[] = [];
     //get list of relations in main
-    var mainTables = findMainDb(q)
+    var mainTables = findMainDb(q, workerTables)
     //copy over to worker
-    findMainDb(q).map(s => this.workerDb.postMessage({
+    findMainDb(q, workerTables).map(s => this.workerDb.postMessage({
       action: "exec",
       sql: "SELECT * INTO ${s} FROM ${s}"
     }))
