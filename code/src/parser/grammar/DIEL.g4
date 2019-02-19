@@ -1,18 +1,15 @@
 grammar DIEL;
 
 queries : (
-          outputStmt
-           | viewStmt
+           viewStmt
            | programStmt
            | staticTableStmt
            | crossfilterStmt
            | templateStmt
            | insertQuery
            //  the rest does not require templating
-           | dynamicTableStmt
-           | inputStmt
+           | originalTableStmt
            | registerTypeUdf
-           | registerTypeTable
            | dropQuery
           )+;
 
@@ -22,10 +19,6 @@ staticTableStmt
 
 registerTypeUdf
   : REGISTER UDF IDENTIFIER TYPE dataType DELIM
-  ;
-
-registerTypeTable
-  : REGISTER WEBWORKER? TABLE tableName=IDENTIFIER '(' columnDefinition (',' columnDefinition)* ')' DELIM
   ;
 
 templateStmt
@@ -60,16 +53,13 @@ constraintDefinition
   : PRIMARY KEY '(' IDENTIFIER (',' IDENTIFIER)* ')'
   | UNIQUE '(' IDENTIFIER (',' IDENTIFIER)*  ')'
   | IDENTIFIER NOT NULL
+  | FOREIGN KEY '(' column=IDENTIFIER ')' REFERENCES table=IDENTIFIER'(' otherColumn=IDENTIFIER ')'
   | SINGLE LINE
   | CHECK (expr)
   ;
 
-inputStmt
-  : CREATE INPUT IDENTIFIER relationDefintion DELIM
-  ;
-
-dynamicTableStmt
-  : CREATE TABLE IDENTIFIER relationDefintion DELIM
+originalTableStmt
+  : (REGISTER|CREATE) (INPUT|TABLE) IDENTIFIER relationDefintion DELIM
   ;
 
 relationDefintion
@@ -77,11 +67,11 @@ relationDefintion
   | AS IDENTIFIER # relationDefintionCopy
   ;
 
-outputStmt
-  : CREATE OUTPUT IDENTIFIER AS selectQuery
-    (constraintClause)?
-    DELIM
-  ;
+// outputStmt
+//   : CREATE OUTPUT IDENTIFIER AS selectQuery
+//     (constraintClause)?
+//     DELIM
+//   ;
 
 constraintClause
   :  CONSTRAIN  constraintDefinition (',' constraintDefinition)*
@@ -94,7 +84,7 @@ columnConstraints
   ;
 
 viewStmt
-  : CREATE PUBLIC? VIEW IDENTIFIER AS selectQuery
+  : CREATE VIEW IDENTIFIER AS selectQuery
     (constraintClause)?
     DELIM
   ;
@@ -161,11 +151,19 @@ whereClause
   ;
 
 groupByClause
-  : GROUP BY expr (',' expr)*
+  : GROUP BY expr (',' expr)* havingClause?
+  ;
+
+havingClause
+  : HAVING expr
   ;
 
 orderByClause
-  : ORDER BY expr (',' expr)* (ASC|DESC)
+  : ORDER BY orderSpec (',' orderSpec)*
+  ;
+
+orderSpec
+  : expr (ASC|DESC)?
   ;
 
 insertQuery
@@ -196,6 +194,7 @@ relationReference
 
 expr
   : unitExpr                                 # exprSimple
+  | NOT expr                                 # exprNegate
   | expr (PIPE expr)+                        # exprConcat
   | '(' expr ')'                             # exprParenthesis
   | function=IDENTIFIER '(' (expr (COMMA expr)*)? ')' # exprFunction
@@ -203,6 +202,7 @@ expr
   | expr IS (NOT)? NULL                      # exprNull
   | (NOT)? EXIST '(' expr ')'                # exprExist
   | CASE WHEN cond=expr THEN thenValue=expr ELSE elseValue=expr END   # exprWhen
+  | expr IN expr   # exprIn
   ;
 
 // note that for the column one we should not recuycle th earlier selectColumnClause because
@@ -238,7 +238,7 @@ compareOp
   | '!='    
   | '>='    
   | '>'     
-  | '<='    
+  | '<='
   | '<'     
   ;
 
@@ -256,7 +256,6 @@ TEMPLATE: 'TEMPLATE' | 'template';
 USE: 'USE' | 'use';
 XCHART: 'XCHART' | 'xchart';
 NAME: 'NAME' | 'name';
-STATIC: 'STATIC' | 'static';
 PUBLIC: 'PUBLIC' | 'public';
 SINGLE: 'SINGLE' | 'single';
 LINE: 'LINE' | 'line';
@@ -304,8 +303,10 @@ LIMIT: 'LIMIT' | 'limit';
 EXIST: 'EXIST' | 'exist';
 GROUP: 'GROUP' | 'group';
 BY: 'BY' | 'by';
+HAVING: 'HAVING' | 'having';
 AND: 'AND' | 'and';
 OR: 'OR' | 'or';
+IN: 'IN' | 'in';
 MINUS: '-';
 DELIM: ';';
 INTERSECT : 'INTERSECT' | 'intersect';

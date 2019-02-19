@@ -13,10 +13,18 @@ export interface Column {
   constraints?: ColumnConstraints;
 }
 
+
+// note that the string would need to contain quotes itself...
+// export interface DefaultValue {
+//   dataType: DataType;
+//   value: ;
+// }
+
 export interface ColumnConstraints {
   notNull?: boolean;
   unique?: boolean;
-  key?: boolean;
+  primaryKey?: boolean;
+  default?: string;
 }
 
 export enum JoinType {
@@ -78,7 +86,7 @@ export interface SelectionUnit {
   baseRelation: RelationReference;
   joinClauses?: JoinAst[];
   whereClause?: ExprAst;
-  groupByClause?: ColumnSelection[];
+  groupByClause?: GroupByAst;
   orderByClause?: OrderByAst[];
   limitClause?: ExprAst;
 }
@@ -123,13 +131,18 @@ export interface InsertionClause extends AstBase {
 }
 
 export enum Order {
-  ASC,
-  DESC
+  ASC = "ASC",
+  DESC = "DESC"
+}
+
+export interface GroupByAst {
+  selections: ExprAst[];
+  predicate?: ExprAst;
 }
 
 export interface OrderByAst {
   order: Order;
-  selection: ColumnSelection;
+  selection: ExprAst;
 }
 
 export interface Drop {

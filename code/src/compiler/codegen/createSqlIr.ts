@@ -1,4 +1,4 @@
-import { DielAst, DynamicRelation, ProgramsIr, DataType } from "../../parser/dielAstTypes";
+import { DielAst, OriginalRelation, ProgramsIr, DataType, OriginalRelationType, DerivedRelationType } from "../../parser/dielAstTypes";
 import { Column, CompositeSelectionUnit, InsertionClause } from "../../parser/sqlAstTypes";
 
 // in this pass, we will create the Ir needed to create the SQL we need
@@ -43,31 +43,38 @@ export function createSqlIr(ast: DielAst): SqlIr {
       name: "timestep",
       type: DataType.Number,
       constraints: {
-        key: true
+        primaryKey: true
       }
     },
     {
       name: "timestamp",
-      type: DataType.Number,
+      type: DataType.TimeStamp,
+      constraints: {
+        default: "CURRENT_TIMESTAMP"
+      }
     }
   ];
-  const tables = ast
-    .inputs
-    .map(i => ({
-      name: i.name,
-      columns: i.columns.concat(inputColumns)
-    }))
-    .concat(ast.dynamicTables)
-    .map(i => ({
-      name: i.name,
-      columns: i.columns
-    }));
-  const views = ast
-    .views
-    .concat(ast.outputs)
+  const tables = ast.originalRelations
+    .filter(i => i.relationType !== OriginalRelationType.ExistingAndImmutable)
+    .map(i => {
+      if (i.relationType === OriginalRelationType.Input) {
+        return {
+          name: i.name,
+          columns: i.columns.concat(inputColumns)
+        };
+      } else if (i.relationType === OriginalRelationType.Table) {
+        return {
+          name: i.name,
+          columns: i.columns
+        };
+      }
+      throw new Error(`SQL IR creation error`);
+    });
+
+    const views = ast.views
     .map(v => ({
       name: v.name,
-      sqlRelationType: SqlRelationType.View,
+      sqlRelationType: v.relationType === DerivedRelationType.View ? SqlRelationType.View : SqlRelationType.Table,
       query: v.selection.compositeSelections
     }));
 

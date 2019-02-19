@@ -1,7 +1,8 @@
 import { JoinAst, RelationSelection, CompositeSelectionUnit, ColumnSelection, OrderByAst, RelationReference, AstType } from "../../parser/sqlAstTypes";
-import { LogInternalError, ReportDielUserError } from "../../lib/messages";
+import { ReportDielUserError } from "../../lib/messages";
 import { ExprAst, ExprType, ExprColumnAst, ExprFunAst, ExprRelationAst } from "../../parser/exprAstTypes";
-import { DielAst, DynamicRelation } from "../../parser/dielAstTypes";
+import { OriginalRelation } from "../../parser/dielAstTypes";
+import { DielIr } from "../DielIr";
 
 /**
  * Find all the top level selections for:
@@ -16,10 +17,10 @@ import { DielAst, DynamicRelation } from "../../parser/dielAstTypes";
  * - dynamicTables
  * @param ast diel ast
  */
-export function applyTemplates(ast: DielAst) {
+export function applyTemplates(ir: DielIr) {
   // note: i think the concat should be fine with modifying in place?
-  ast.views.concat(ast.outputs).map(r => tryToApplyATemplate(r.selection));
-  ast.crossfilters.map(x => {
+  ir.GetViews().map(r => tryToApplyATemplate(r.selection));
+  ir.ast.crossfilters.map(x => {
     x.charts.map(c => {
       tryToApplyATemplate(c.predicate);
       tryToApplyATemplate(c.selection);
@@ -27,14 +28,14 @@ export function applyTemplates(ast: DielAst) {
   });
 
   // defined here since it needs to access the global definition
-  function copyRelationSpec(r: DynamicRelation): void {
+  function copyRelationSpec(r: OriginalRelation): void {
     if (r.copyFrom) {
       // make sure it's not copying from itself
       if (r.copyFrom === r.name) {
         ReportDielUserError(`You cannot copy ${r.name} from itself!`);
       }
       // find the relation
-      const sourceRelation = ast.inputs.concat(ast.dynamicTables).filter(r => r.name === r.copyFrom);
+      const sourceRelation = ir.GetDielDefinedOriginalRelation().filter(r => r.name === r.copyFrom);
       if (sourceRelation.length === 0) {
         ReportDielUserError(`The relation definition you are trying to copy from, ${r.copyFrom}, does not exist`);
       } else {
@@ -43,7 +44,7 @@ export function applyTemplates(ast: DielAst) {
     }
   }
   // and the copy pass
-  ast.inputs.concat(ast.dynamicTables).map(r => copyRelationSpec(r));
+  ir.GetDielDefinedOriginalRelation().map(r => copyRelationSpec(r));
 }
 
 /**
@@ -83,7 +84,7 @@ function tryToApplyATemplate(ast: RelationSelection | JoinAst): void {
   }
 
   function _visitOrderByAst(c: OrderByAst) {
-    _visitColumnSelection(c.selection);
+    _visitExprAst(c.selection);
   }
 
   function _visitExprAst(e: ExprAst) {
@@ -121,7 +122,10 @@ function tryToApplyATemplate(ast: RelationSelection | JoinAst): void {
     _visitRelationReference(ast.relation.baseRelation);
     ast.relation.joinClauses.map(j => _visitJoinAst(j));
     _visitExprAst(ast.relation.whereClause);
-    ast.relation.groupByClause.map(c => _visitColumnSelection(c));
+    ast.relation.groupByClause.selections.map(c => _visitExprAst(c));
+    if (ast.relation.groupByClause.predicate) {
+      _visitExprAst(ast.relation.groupByClause.predicate);
+    }
     ast.relation.orderByClause.map(c => _visitOrderByAst(c));
     _visitExprAst(ast.relation.limitClause);
   }
