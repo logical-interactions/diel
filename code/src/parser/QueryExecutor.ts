@@ -2,7 +2,7 @@ import * as sqlAst from "./sqlAstTypes";
 import { Database } from "sql.js";
 import { generateSelectionUnit } from "../compiler/codegen/codeGenSql";
 
-enum DbType {
+export enum DbType {
   Main,
   Worker
 }
@@ -52,7 +52,7 @@ export function findMainDb(selection: sqlAst.SelectionUnit, workerTables: sqlAst
     return rels;
 }
 
-class QueryExecutor {
+export class QueryExecutor {
   mainDb: Database;
   workerDb: Worker;
   metaData: {[index: string]: DbType};
