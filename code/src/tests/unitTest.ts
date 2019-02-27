@@ -33,6 +33,8 @@ export function testTopologicalSort() {
 //multiple views depend on one table
 //topological sort array representation doesn't distinguish between nodes at same level vs nodes that depend on each other
 //ASK: we're not doing isDependentOn yet, right?
+//TODO: refactor dependency graph tests
+//TODO: test transitive closure
 
 
 export function testDependencyGraph() {
@@ -68,6 +70,7 @@ export function testDepGraph1() {
   console.log("1 tree: ",deps.depTree);
   console.log("1 topo order: ",deps.topologicalOrder);
   // console.log("dependencies", deps);
+  console.log("Affected relations: ", deps.inputDependencies); 
 }
 
 export function testDepGraph2a() {
@@ -154,6 +157,10 @@ export function testDepGraph3() {
   ApplyDependencies(query_ir);
   const deps = query_ir.dependencies;
   console.log("3: ", deps.depTree);
+}
+
+export function testTransitiveClosure() {
+
 }
 
 testTopologicalSort();
