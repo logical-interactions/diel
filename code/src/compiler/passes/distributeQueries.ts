@@ -1,11 +1,11 @@
 import { DielIr } from "../DielIr";
-import { DielPhysicalExecution, DataType, OriginalRelation, OriginalRelationType, DerivedRelationType, DielAst, createEmptyDieAst, DerivedRelation, UdfType, ProgramsIr } from "../../parser/dielAstTypes";
+import { DielPhysicalExecution, DataType, OriginalRelation, RelationType, DielAst, createEmptyDieAst, DerivedRelation, UdfType, ProgramsIr } from "../../parser/dielAstTypes";
 import { SqlIr, SqlRelationType, RelationQuery } from "../codegen/createSqlIr";
-import { MetaDataPhysical } from "../../runtime/DielRuntime";
+import DielRuntime, { MetaDataPhysical } from "../../runtime/DielRuntime";
 import { generateDependenciesByName } from "./dependnecy";
 import { SetIntersection, SetUnion, DeepCopy } from "../../lib/dielUtils";
 import { RelationSelection, SetOperator, AstType, CompositeSelectionUnit } from "../../parser/sqlAstTypes";
-import { ExprType, ExprFunAst, FunctionType, ExprValAst } from "../../parser/exprAstTypes";
+import { ExprType, ExprFunAst, FunctionType, ExprValAst, ExprColumnAst } from "../../parser/exprAstTypes";
 import { ReportDielUserError, LogInternalError } from "../../lib/messages";
 
 /**
@@ -15,8 +15,8 @@ import { ReportDielUserError, LogInternalError } from "../../lib/messages";
  * - this is done before caching and materialization
  * - only distributed to one remote
  */
-
-export function DistributeQueries(ir: DielIr, metaData: MetaDataPhysical): DielPhysicalExecution {
+export function DistributeQueries(rt: DielRuntime): DielPhysicalExecution {
+  const { ir, metaData } = rt;
   // we need to coordinate --- have the click trigger a share, then have the worker
   // listen and send results back, as an event that inserts
 
@@ -51,10 +51,10 @@ export function DistributeQueries(ir: DielIr, metaData: MetaDataPhysical): DielP
     }
     for (let d of mainCreates) {
       const r = ir.allDerivedRelations.get(d);
-      if (r.relationType !== DerivedRelationType.Output) {
+      if (r.relationType !== RelationType.Output) {
         workerNewViews.push({
           name: d,
-          relationType: DerivedRelationType.View,
+          relationType: RelationType.View,
           selection: r.selection
         });
       }
@@ -72,13 +72,13 @@ export function DistributeQueries(ir: DielIr, metaData: MetaDataPhysical): DielP
     // add the programs to main
     // create tables from these views for main
     for (let d of mainCreates) {
-      main.originalRelations.push(getStaticTableFromDerived(ir.allCompositeSelections.get(d), d));
+      const newR = getStaticTableFromDerived(ir.allCompositeSelections.get(d), d);
+      if (!newR) {
+        LogInternalError(`Relation ${d} was not found and was needed in query distribution!`);
+      }
+      main.originalRelations.push(newR);
     }
-    // create the input relation on main
-    // very inefficient. maybe: Sahana: figure out big O and improve efficiency
-    // we also need to create the tables for the inputs in the table, except that here, they are just raw definitions, without the additional triggers
-    // FIXME: better names
-    ir.dependencies.inputDependencies.forEach((iDep, keyI) => {
+    ir.dependencies.inputDependenciesOutput.forEach((iDep, keyI) => {
       const intersect = SetIntersection(wDep, iDep);
       if (intersect.size > 0) {
         //check if we just shared this input; if not, copy to worker and add this input to justShared for the future
@@ -135,7 +135,7 @@ function getStaticTableFromDerived(r: CompositeSelectionUnit[], relation: string
   // FIXME: this will make the dependency diagram obsolete
   let createSpec: OriginalRelation = {
     name: relation,
-    relationType: OriginalRelationType.Input,
+    relationType: RelationType.EventTable,
     columns
   };
   return createSpec;
@@ -169,13 +169,20 @@ function generateShipWorkerInputClause(inputName: string): RelationSelection {
       dataType: DataType.String,
       value: inputName
     };
+    const argLineage: ExprColumnAst = {
+      columnName: "timestep",
+      exprType: ExprType.Column,
+      dataType: DataType.String,
+      relationName: "new",
+      hasStar: false
+    };
     // FIXME: this function reference is a bit brittle
     const expr: ExprFunAst = {
       exprType: ExprType.Func,
       dataType: DataType.Void,
       functionType: FunctionType.Custom,
       functionReference: "shipWorkerInput",
-      args: [argInputName]
+      args: [argInputName, argLineage]
     };
     const newQuery: RelationSelection = {
       astType: AstType.RelationSelection,

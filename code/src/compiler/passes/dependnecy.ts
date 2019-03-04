@@ -1,6 +1,6 @@
 import { DielIr } from "../../lib";
 import { getSelectionUnitDep, getTopologicalOrder, DependencyTree } from "./passesHelper";
-import { DielAst } from "../../parser/dielAstTypes";
+import { DielAst, RelationType } from "../../parser/dielAstTypes";
 import { SetIntersection } from "../../lib/dielUtils";
 import { string } from "prop-types";
 
@@ -31,27 +31,49 @@ export function ApplyDependencies(ir: DielIr) {
   const topologicalOrder = getTopologicalOrder(depTree);
   const inputDependencies = generateDependenciesByInput(depTree, ir);
   const tableDependencies = generateDependenciesByTable(depTree, ir);
+  
+  const inputDependenciesAll = inputDependencies.inputDependenciesAll; 
+  const inputDependenciesOutput = inputDependencies.inputDependenciesOutput;
   // console.log("hi");
   ir.dependencies = {
     depTree,
     topologicalOrder,
-    inputDependencies,
+    inputDependenciesOutput,
+    inputDependenciesAll,
     tableDependencies
   };
 }
 
+// export class DependencyInfo {
+//   depTree: DependencyTree;
+//   topologicalOrder: string[];
+//   inputDependenciesOutput: Map<string, Set<string>>;
+//   inputDependenciesAll: Map<string, Set<string>>;
+//   constructor() {
+
+//   }
+
+// }
+
+// function modifyDependencyWithNewInput() {
+
+// }
+
 // this is sort of a transitive closure step
 function generateDependenciesByInput(depTree: DependencyTree, ir: DielIr) {
-  const inputDependency = new Map<string, Set<string>>();
-  ir.GetInputs().map(i => {
-    // filter out the outputs
-    // const inputDependencyValues: string[] = [];
-    const allDependencies = generateDependenciesByName(depTree, i.name);
-    const outputSet = new Set(ir.GetAllViews().map(o => o.name));
+  const inputDependenciesOutput = new Map<string, Set<string>>();
+  const inputDependenciesAll = new Map<string, Set<string>>();
+  const outputSet = new Set(ir.GetAllViews().filter(v => v.relationType === RelationType.Output).map(o => o.name));
+  ir.GetEventRelationNames().map(i => {
+    const allDependencies = generateDependenciesByName(depTree, i);
     const inputDependencyValues = SetIntersection<string>(allDependencies, outputSet);
-    inputDependency.set(i.name, inputDependencyValues);
+    inputDependenciesOutput.set(i, inputDependencyValues);
+    inputDependenciesAll.set(i, allDependencies);
   });
-  return inputDependency;
+  return {
+    inputDependenciesOutput,
+    inputDependenciesAll
+  };
 }
 
 //does transitive closure step, but with tables instead of inputs
@@ -81,7 +103,8 @@ export function generateDependenciesByName(depTree: DependencyTree, rName: strin
     // search through dependency
     let oldSet = new Set(affectedRelations);
     for (let [key, value] of depTree) {
-      if (value.dependsOn.filter(d => d === rName)) {
+      const found = value.dependsOn.filter(d => d === rName);
+      if (found.length > 0) {
         affectedRelations.add(key);
       }
     }

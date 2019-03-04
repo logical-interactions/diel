@@ -1,13 +1,10 @@
-import { DielAst, DerivedRelation, DataType, BuiltInColumns, OriginalRelation, OriginalRelationType, DerivedRelationType } from "../parser/dielAstTypes";
-import { SelectionUnit, CompositeSelection, Column, ColumnSelection, RelationReference, getRelationReferenceName, RelationSelection, AstType, InsertionClause } from "../parser/sqlAstTypes";
+import { DielAst, DerivedRelation, DataType, OriginalRelation, RelationType } from "../parser/dielAstTypes";
+import { SelectionUnit, CompositeSelection } from "../parser/sqlAstTypes";
 import { DependencyInfo } from "./passes/passesHelper";
-import { LogInternalError, ReportDielUserError, sanityAssert } from "../lib/messages";
-import { ExprType, ExprFunAst, ExprColumnAst, ExprAst } from "../parser/exprAstTypes";
-import { copyColumnSelection, createColumnSectionFromRelationReference } from "./passes/helper";
+import { LogWarning } from "../lib/messages";
+import { ExprType, ExprColumnAst } from "../parser/exprAstTypes";
 
 type CompositeSelectionFunction<T> = (s: CompositeSelection, relationName?: string) => T;
-type DerivedRelationFunction<T> = (s: DerivedRelation, relationName?: string) => T;
-type ExistingRelationFunction<T> = (s: OriginalRelation, relationName?: string) => T;
 export type SelectionUnitVisitorFunctionOptions = {relationName?: string, ir?: DielIr};
 export type SimpleColumn = {columnName: string, type: DataType};
 type SelectionUnitFunction<T> = (s: SelectionUnit, optional: SelectionUnitVisitorFunctionOptions) => T;
@@ -32,7 +29,6 @@ export class DielIr {
     this.ast = ast;
     this.buildIndicesToIr();
   }
-
   /**
    * Public helper functions
    */
@@ -78,21 +74,42 @@ export class DielIr {
 
   public GetOutputs() {
     return this.ast.views
-      .filter(r => r.relationType === DerivedRelationType.Output);
+      .filter(r => r.relationType === RelationType.Output);
   }
 
   public GetAllViews() {
     return this.ast.views
-      .filter(r => r.relationType !== DerivedRelationType.StaticTable);
+      .filter(r => r.relationType !== RelationType.StaticTable);
   }
 
-  public GetInputs() {
-    return this.ast.originalRelations
-      .filter(r => r.relationType === OriginalRelationType.Input);
+  public GetEventByName(n: string) {
+    // could be either a table or a view
+    const o = this.allOriginalRelations.get(n);
+    if (o) {
+      return o;
+    }
+    const d = this.allDerivedRelations.get(n);
+    if (d && (d.relationType === RelationType.EventView)) {
+      return d;
+    }
+    LogWarning(`GetEventByName for ${n} failed`);
+  }
+
+  /**
+   * returns all the event relations by name
+   */
+  public GetEventRelationNames() {
+    const originals = this.ast.originalRelations
+      .filter(r => r.relationType === RelationType.EventTable)
+      .map(i => i.name);
+    const derived = this.ast.views
+      .filter(r => r.relationType === RelationType.EventView)
+      .map(d => d.name);
+    return originals.concat(derived);
   }
 
   public GetTables() {
-    return this.ast.originalRelations.filter(r => r.relationType === OriginalRelationType.Table);
+    return this.ast.originalRelations.filter(r => r.relationType === RelationType.Table);
   }
 
   public GetOriginalRelations() {
@@ -101,7 +118,7 @@ export class DielIr {
 
   public GetDielDefinedOriginalRelation() {
     return this.ast.originalRelations
-      .filter(r => r.relationType !== OriginalRelationType.ExistingAndImmutable);
+      .filter(r => r.relationType !== RelationType.ExistingAndImmutable);
   }
   // <T>(fun: DerivedRelationFunction<T>): T[] {
   //     .map(r => fun(r, r.name));
@@ -170,13 +187,6 @@ export class DielIr {
   //   });
   // }
 
-  public GetUdfType(funName: string) {
-    const r = this.ast.udfTypes.filter(u => u.udf === funName);
-    if (r.length !== 1) {
-      LogInternalError(`Type of ${funName} not defined.`);
-    }
-    return r[0].type;
-  }
 
   buildIndicesToIr() {
     const allCompositeSelections = new Map();

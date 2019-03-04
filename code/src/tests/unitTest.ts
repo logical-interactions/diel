@@ -117,8 +117,8 @@ export function testDepGraph2a() {
   }
 
   //transitive closure test
-  const depsSetA = deps.inputDependencies.get('tA');
-  const depsSetB = deps.inputDependencies.get('tB');
+  const depsSetA = deps.inputDependenciesAll.get('tA');
+  const depsSetB = deps.inputDependenciesAll.get('tB');
 
   if(!depsSetA.has('v1') || depsSetA.size != 1) {
     throw new Error('tA should only have view 1 dependent on it; instead, dependencies are ' + depsSetA);
@@ -167,7 +167,7 @@ export function testDepGraph2b() {
   } 
 
   //transitive closure test
-  const depsSet = deps.inputDependencies.get('tA');
+  const depsSet = deps.inputDependenciesAll.get('tA');
   if(!depsSet.has('v1') || !depsSet.has('v2') || depsSet.size != 2) {
     throw new Error('tA should have views 2 and 1 dependent on it; instead, dependencies are ' + depsSet);
   }
@@ -234,9 +234,9 @@ export function testDepGraph3() {
   }
 
   //transitive closure tests (all tables influence all views)
-  const depsSetA = deps.inputDependencies.get('tA');
-  const depsSetB = deps.inputDependencies.get('tB');
-  const depsSetC = deps.inputDependencies.get('tC');
+  const depsSetA = deps.inputDependenciesAll.get('tA');
+  const depsSetB = deps.inputDependenciesAll.get('tB');
+  const depsSetC = deps.inputDependenciesAll.get('tC');
 
   if(!depsSetA.has('v1') || !depsSetA.has('v2') || !depsSetA.has('v3') || !depsSetA.has('v4') || depsSetA.size != 4) {
     throw new Error('All views should depend on table A; instead, found the following depending on table A: '+depsSetA);
