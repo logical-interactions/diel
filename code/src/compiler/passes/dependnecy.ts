@@ -1,11 +1,13 @@
 import { DielIr } from "../../lib";
 import { getSelectionUnitDep, getTopologicalOrder, DependencyTree } from "./passesHelper";
 import { DielAst } from "../../parser/dielAstTypes";
+import { SetIntersection } from "../../lib/dielUtils";
+import { string } from "prop-types";
 
 export function ApplyDependencies(ir: DielIr) {
   // first build the tree
   let depTree: DependencyTree = new Map<string, {dependsOn: string[], isDependentOn: string[]}>();
-  ir.ApplyToAllSelectionUnits<void>((s, optional) => {
+  ir.ApplyToImmediateSelectionUnits<void>((s, optional) => {
     const rName = optional.relationName;
     if (!rName) {
       throw new Error(`relation name must be defined`);
@@ -24,17 +26,56 @@ export function ApplyDependencies(ir: DielIr) {
     });
   });
   // TODO need to do another pass to set the isDependentOn
+  // we need to do another pass where we look up the other direction and populate it...
+  // sahana?
   const topologicalOrder = getTopologicalOrder(depTree);
   const inputDependencies = generateDependenciesByInput(depTree, ir);
+  const tableDependencies = generateDependenciesByTable(depTree, ir);
+  // console.log("hi");
   ir.dependencies = {
     depTree,
     topologicalOrder,
-    inputDependencies
+    inputDependencies,
+    tableDependencies
   };
 }
 
 // this is sort of a transitive closure step
 function generateDependenciesByInput(depTree: DependencyTree, ir: DielIr) {
+  const inputDependency = new Map<string, Set<string>>();
+  ir.GetInputs().map(i => {
+    // filter out the outputs
+    // const inputDependencyValues: string[] = [];
+    const allDependencies = generateDependenciesByName(depTree, i.name);
+    const outputSet = new Set(ir.GetAllViews().map(o => o.name));
+    const inputDependencyValues = SetIntersection<string>(allDependencies, outputSet);
+    inputDependency.set(i.name, inputDependencyValues);
+  });
+  return inputDependency;
+}
+
+//does transitive closure step, but with tables instead of inputs
+function generateDependenciesByTable(depTree: DependencyTree, ir: DielIr) {
+  const tableDeps = new Map<string, Set<string>>();
+  ir.GetTables().map(t => {
+    const allDependencies = generateDependenciesByName(depTree, t.name);
+    //are outputs a concern if we're just looking at tables (not inputs)?
+    const outputSet = new Set(ir.GetAllViews().map(o => o.name));
+    const depValues = SetIntersection<string>(allDependencies, outputSet);
+    tableDeps.set(t.name, depValues);
+  })
+  return tableDeps;
+}
+
+/**
+ * TODO add depndsOn?: true and do another pass that uses transitive closure to figure out all dependnecies
+ * @param depTree
+ * @param rName
+ * @param depndsOn the boolean is defaulted to true, if it's false, it's the other direction.
+ */
+export function generateDependenciesByName(depTree: DependencyTree, rName: string) {
+  const allDependencies = new Set<string>();
+  oneStep(rName, allDependencies);
   // recursively checks for dependencies
   function oneStep(rName: string, affectedRelations: Set<string>) {
     // search through dependency
@@ -54,19 +95,5 @@ function generateDependenciesByInput(depTree: DependencyTree, ir: DielIr) {
     }
     return affectedRelations;
   }
-
-  const inputDependency = new Map<string, string[]>();
-  ir.GetInputs().map(i => {
-    const allDependencies = new Set<string>();
-    oneStep(i.name, allDependencies);
-    // filter out the outputs
-    const inputDependencyValues: string[] = [];
-    allDependencies.forEach(d => {
-      if (ir.GetOutputs().map(o => o.name === d)) {
-        inputDependencyValues.push(d);
-      }
-    });
-    inputDependency.set(i.name, inputDependencyValues);
-  });
-  return inputDependency;
+  return allDependencies;
 }

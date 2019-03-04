@@ -18,11 +18,14 @@ type SelectionUnitFunction<T> = (s: SelectionUnit, optional: SelectionUnitVisito
  */
 export class DielIr {
 
+  //TENTATIVE FIELD: maintain a list of inputs that were just copied over (comes into play in distributeQueries.ts)
+  justShared: Set<OriginalRelation>;
   ast: DielAst;
   dependencies: DependencyInfo;
   // we want to access the derived relations by name and be iterables
   // FIXME: a bit weird that we are accessing the selection directly for derived but not for the dynamic one...
-  allDerivedRelations: Map<string, CompositeSelection>;
+  allDerivedRelations: Map<string, DerivedRelation>;
+  allCompositeSelections: Map<string, CompositeSelection>;
   allOriginalRelations: Map<string, OriginalRelation>;
   // viewTypes: Map<string, Map<string, DataType>>;
   constructor(ast: DielAst) {
@@ -36,7 +39,7 @@ export class DielIr {
   public GetRelationColumnType(relationName: string, columnName: string) {
     // return the type
     // first search the derived, then the source relations
-    const derived = this.allDerivedRelations.get(relationName);
+    const derived = this.allCompositeSelections.get(relationName);
     if (derived) {
       return this.GetTypeFromDerivedRelationColumn(derived[0].relation, columnName);
     } else {
@@ -75,12 +78,21 @@ export class DielIr {
 
   public GetOutputs() {
     return this.ast.views
-      .filter(r => r.relationType === DerivedRelationType.View);
+      .filter(r => r.relationType === DerivedRelationType.Output);
+  }
+
+  public GetAllViews() {
+    return this.ast.views
+      .filter(r => r.relationType !== DerivedRelationType.StaticTable);
   }
 
   public GetInputs() {
     return this.ast.originalRelations
       .filter(r => r.relationType === OriginalRelationType.Input);
+  }
+
+  public GetTables() {
+    return this.ast.originalRelations.filter(r => r.relationType === OriginalRelationType.Table);
   }
 
   public GetOriginalRelations() {
@@ -114,7 +126,14 @@ export class DielIr {
   //     .map(r => fun(r, r.name));
   // }
 
-  public ApplyToAllSelectionUnits<T>(fun: SelectionUnitFunction<T>, byDependency = false): T[] {
+  /**
+   * Warning: this method does not actually visit all the selection units
+   *   e.g., if it's a where predicate with a subquery, it's not going to visit the unit
+   *         selection from that subquery.
+   * @param fun
+   * @param byDependency
+   */
+  public ApplyToImmediateSelectionUnits<T>(fun: SelectionUnitFunction<T>, byDependency = false): T[] {
     const ir = this;
     function applyToDerivedRelation<T>(r: DerivedRelation, fun: SelectionUnitFunction<T>): T[] {
       return r.selection.compositeSelections.map(c => fun(c.relation, {ir, relationName: r.name}));
@@ -123,7 +142,7 @@ export class DielIr {
     if (byDependency) {
       // check if the dependency graph has been built, if not, build it now
       ir.dependencies.topologicalOrder.reduce(
-        (acc, r) => acc.concat(ir.allDerivedRelations.get(r).map(c => fun(c.relation, {ir, relationName: r}))), initial);
+        (acc, r) => acc.concat(ir.allCompositeSelections.get(r).map(c => fun(c.relation, {ir, relationName: r}))), initial);
     } else {
       // this step flattens
       ir.ast.views.reduce((acc, r) => acc.concat(applyToDerivedRelation(r, fun)), initial);
@@ -160,16 +179,19 @@ export class DielIr {
   }
 
   buildIndicesToIr() {
-    const allDerivedRelations = new Map();
+    const allCompositeSelections = new Map();
     this.applyToAllCompositeSelection<void>((r, name) => {
-      allDerivedRelations.set(name, r);
+      allCompositeSelections.set(name, r);
     });
-    this.allDerivedRelations = allDerivedRelations;
-    const allOriginalRelations = new Map();
+    this.allCompositeSelections = allCompositeSelections;
+    this.allOriginalRelations = new Map();
     this.GetOriginalRelations().map((r) => {
-      allOriginalRelations.set(r.name, r);
+      this.allOriginalRelations.set(r.name, r);
     });
-    this.allOriginalRelations = allOriginalRelations;
+    this.allDerivedRelations = new Map();
+    this.GetAllViews().map((r) => {
+      this.allDerivedRelations.set(r.name, r);
+    });
   }
 
   applyToAllCompositeSelection<T>(fun: CompositeSelectionFunction<T>, byDependency = false): T[] {
@@ -177,7 +199,7 @@ export class DielIr {
       let initial: T[] = [];
       // check if the dependency graph has been built, if not, build it now
       this.dependencies.topologicalOrder.reduce(
-        (acc, r) => acc.concat(fun(this.allDerivedRelations.get(r), r))
+        (acc, r) => acc.concat(fun(this.allCompositeSelections.get(r), r))
         , initial);
     } else {
       // this step flattens

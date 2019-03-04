@@ -20,6 +20,7 @@ export interface Column {
 //   value: ;
 // }
 
+// currently a bit lazy about the default representation...
 export interface ColumnConstraints {
   notNull?: boolean;
   unique?: boolean;
@@ -83,7 +84,7 @@ export interface SelectionUnit {
   derivedColumnSelections?: ColumnSelection[];
   // these are filled in the parsing step
   columnSelections: ColumnSelection[];
-  baseRelation: RelationReference;
+  baseRelation?: RelationReference;
   joinClauses?: JoinAst[];
   whereClause?: ExprAst;
   groupByClause?: GroupByAst;

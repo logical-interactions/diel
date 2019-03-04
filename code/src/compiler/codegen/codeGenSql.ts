@@ -1,13 +1,21 @@
-import { ProgramsIr, DataType } from "../../parser/dielAstTypes";
+import { DataType, DielAst, ProgramSpec } from "../../parser/dielAstTypes";
 import { Column, CompositeSelectionUnit, InsertionClause, RelationSelection, JoinAst, SelectionUnit, ColumnSelection, OrderByAst, RelationReference, SetOperator, JoinType, AstType, Order, GroupByAst } from "../../parser/sqlAstTypes";
-import { RelationSpec, RelationQuery, SqlIr } from "./createSqlIr";
-import { LogInternalError, ReportDielUserError } from "../../lib/messages";
+import { RelationSpec, RelationQuery, SqlIr, createSqlAstFromDielAst } from "./createSqlIr";
+import { ReportDielUserError } from "../../lib/messages";
 import { ExprAst, ExprType, ExprValAst, ExprColumnAst, ExprRelationAst, ExprFunAst, FunctionType, BuiltInFunc, ExprParen } from "../../parser/exprAstTypes";
 
-export function generateSqlFromIr(ir: SqlIr) {
+export function generateSqlFromDielAst(ast: DielAst) {
+  const sqlAst = createSqlAstFromDielAst(ast);
+  return generateStringFromSqlIr(sqlAst);
+}
+
+export function generateStringFromSqlIr(ir: SqlIr) {
   const tables = ir.tables.map(t => generateTableSpec(t));
   const views = ir.views.map(v => generateSqlViews(v));
-  const triggers = ir.triggers.map(t => generateTrigger(t));
+  let triggers: string[] = [];
+  ir.triggers.forEach((v, k) => {
+    triggers = triggers.concat(generateTrigger(v, k));
+  });
   return tables.concat(views).concat(triggers);
 }
 
@@ -44,7 +52,7 @@ function generateCompositeSelectionUnit(c: CompositeSelectionUnit): string {
   return `${op} ${query}`.replace(/  \n[  \n]+/g, " ");
 }
 
-export function generateSelectionUnit(v: SelectionUnit, original = false): string {
+export function generateSelectionUnit(v: SelectionUnit): string {
   const selection = generateColumnSelection(v.columnSelections);
   // const selection = original
   //   ? generateColumnSelection(v.columnSelections)
@@ -61,8 +69,7 @@ export function generateSelectionUnit(v: SelectionUnit, original = false): strin
  * @param v
  */
 export function generateSelectionUnitBody(v: SelectionUnit) {
-  return `FROM
-  ${generateRelationReference(v.baseRelation)}
+  return `${v.baseRelation ? `FROM ${generateRelationReference(v.baseRelation)}` : ""}
   ${v.joinClauses ? v.joinClauses.map(j => generateJoin(j)) : ""}
   ${generateWhere(v.whereClause)}
   ${generateGroupBy(v.groupByClause)}
@@ -119,7 +126,11 @@ function generateWhere(e: ExprAst): string {
 function generateExpr(e: ExprAst): string {
   if (e.exprType === ExprType.Val) {
     const v = e as ExprValAst;
-    return v.value.toString();
+    const str = v.value.toString();
+    if (e.dataType === DataType.String || DataType.TimeStamp) {
+      return `'${str}'`;
+    }
+    return str;
   } else if (e.exprType === ExprType.Column) {
     const c = e as ExprColumnAst;
     const prefix = c.relationName ? `${c.relationName}.` : "";
@@ -190,13 +201,13 @@ function generateLimit(e: ExprAst): string {
   return `LIMIT ${generateExpr(e)}`;
 }
 
-function generateTrigger(t: ProgramsIr): string {
-  if (!t.input) {
+function generateTrigger(queries: ProgramSpec[], input: string): string {
+  if (!input) {
     // this is the general one
     return "";
   }
-  let program = `CREATE TRIGGER ${t.input}DielProgram AFTER INSERT ON ${t.input}\nBEGIN\n`;
-  program += t.queries.map(p => {
+  let program = `CREATE TRIGGER ${input}DielProgram AFTER INSERT ON ${input}\nBEGIN\n`;
+  program += queries.map(p => {
     if (p.astType === AstType.RelationSelection) {
       const r = p as RelationSelection;
       return generateSelect(r.compositeSelections) + ";";
@@ -211,10 +222,11 @@ function generateTrigger(t: ProgramsIr): string {
 
 function generateInserts(i: InsertionClause): string {
   if (!i) return "";
+  const columns = `(${i.columns.map(c => c).join(", ")})`;
   const values = i.values
-    ? i.values.map(v => v.toString()).join(", ")
+    ? `VALUES (${i.values.map(v => v.toString()).join(", ")})`
     : generateSelect(i.selection.compositeSelections);
-  return `INSERT INTO ${i.relation} ${values}`;
+  return `INSERT INTO ${i.relation} ${columns} ${values}`;
 }
 
 const TypeConversionLookUp = new Map<DataType, string>([

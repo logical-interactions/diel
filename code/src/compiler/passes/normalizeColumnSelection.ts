@@ -11,7 +11,7 @@ import { copyColumnSelection, createColumnSectionFromRelationReference } from ".
  * - supports subqueries, e.g., select k.* from (select * from t1) k;
  */
 export function NormalizeColumnSelection(ir: DielIr) {
-  ir.ApplyToAllSelectionUnits(normalizeColumnForSelectionUnit, true);
+  ir.ApplyToImmediateSelectionUnits(normalizeColumnForSelectionUnit, true);
 }
 
 function columnsFromSelectionUnit(su: SelectionUnit): SimpleColumn[] {
@@ -33,7 +33,7 @@ function columnsFromSelectionUnit(su: SelectionUnit): SimpleColumn[] {
 }
 
 function columnsFromRelationName(ir: DielIr, relationName: string): SimpleColumn[] {
-  const derived = ir.allDerivedRelations.get(relationName);
+  const derived = ir.allCompositeSelections.get(relationName);
   if (derived) {
     return columnsFromSelectionUnit(derived[0].relation);
   }

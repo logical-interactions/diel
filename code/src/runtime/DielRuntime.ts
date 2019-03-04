@@ -6,21 +6,29 @@ import { DIELParser } from "../parser/grammar/DIELParser";
 import { loadPage } from "../notebook/index";
 import { Database, Statement } from "sql.js";
 import { SelectionUnit } from "../parser/sqlAstTypes";
-import { RuntimeCell, DbRow, DielRuntimeConfig, TableMetaData, } from "./runtimeTypes";
+import { RuntimeCell, DbRow, DielRuntimeConfig, TableMetaData, TableLocation, } from "./runtimeTypes";
 import { OriginalRelation, DerivedRelation, DielPhysicalExecution, } from "../parser/dielAstTypes";
-import { generateSelectionUnit, generateSqlFromIr } from "../compiler/codegen/codeGenSql";
+import { generateSelectionUnit, generateStringFromSqlIr, generateSqlFromDielAst } from "../compiler/codegen/codeGenSql";
 import Visitor from "../parser/generateAst";
-// import { getDielIr } from "../lib/cli-compiler";
-import { CompileDiel } from "../compiler/DielCompiler";
+import { CompileDiel, CompilePhysicalExecution } from "../compiler/DielCompiler";
 import { log } from "../lib/dielUdfs";
 import { downloadHelper } from "../lib/dielUtils";
-import { SqlIr, createSqlIr } from "../compiler/codegen/createSqlIr";
-import { LogInternalError, LogTmp } from "../lib/messages";
+import { LogInternalError, LogTmp, ReportUserRuntimeError, LogWarning } from "../lib/messages";
 import { DielIr } from "../compiler/DielIr";
+import { processSqliteMasterMetaData } from "./runtimeHelper";
+import WorkerPool from "./WorkerPool";
 
 // hm watch out for import path
 //  also sort of like an odd location...
 const StaticSqlFile = "./src/compiler/codegen/static.sql";
+
+export enum WorkerCmd {
+  InitialSetUp = "InitialSetUp",
+  ShareInputAfterTick = "ShareInputAfterTick",
+  ShareViewsAfterTick = "ShareViewsAfterTick",
+}
+
+export const SqliteMasterQuery = `SELECT sql, name table_name FROM sqlite_master WHERE type='table' and sql not null`;
 
 type ReactFunc = (v: any) => void;
 type OutputConfig = {
@@ -33,7 +41,10 @@ const defaultOuptConfig = {
 type TickBind = {
   outputName: string,
   uiUpdateFunc: ReactFunc,
-  outputConfig: OutputConfig};
+  outputConfig: OutputConfig
+};
+
+export type MetaDataPhysical = Map<string, TableMetaData>;
 
 /**
  * DielIr would now take an empty ast
@@ -46,15 +57,16 @@ type TickBind = {
 export default class DielRuntime {
   ir: DielIr;
   physicalExecution: DielPhysicalExecution;
-  metaData: Map<string, TableMetaData>;
+  workerPool: WorkerPool;
+  metaData: MetaDataPhysical;
   runtimeConfig: DielRuntimeConfig;
   cells: RuntimeCell[];
   db: Database;
-  workerDbPool: Worker[];
   visitor: Visitor;
   protected boundFns: TickBind[];
   protected output: Map<string, Statement>;
-  protected input: Map<string, Statement>;
+  // protected input: Map<string, Statement>;
+
 
   constructor(runtimeConfig: DielRuntimeConfig) {
     // temp, fixme
@@ -64,8 +76,10 @@ export default class DielRuntime {
     this.visitor = new Visitor();
 
     // the following are run time bindings for the reactive layer
-    this.input = new Map();
+    // this.input = new Map();
     this.output = new Map();
+    this.metaData = new Map();
+    this.boundFns = [];
     this.runOutput = this.runOutput.bind(this);
     this.tick = this.tick.bind(this);
     this.BindOutput = this.BindOutput.bind(this);
@@ -74,23 +88,59 @@ export default class DielRuntime {
 
   public BindOutput(view: string, reactFn: ReactFunc, cIn = {} as OutputConfig) {
     if (!this.output.has(view)) {
-      throw new Error(`output not defined ${view} ${Array.from(this.output.keys()).join(", ")}`);
+      ReportUserRuntimeError(`output not defined ${view}, from current outputs of: [${Array.from(this.output.keys()).join(", ")}]`);
     }
     // immtable
     const outputConfig = Object.assign({}, defaultOuptConfig, cIn);
     this.boundFns.push({outputName: view, uiUpdateFunc: reactFn, outputConfig });
   }
 
-  // FIXME: gotta do some run time type checking here!
-  public NewInput(i: string, o: any) {
-    // let tsI = Object.assign({$ts: timeNow()}, o);
-    this.input.get(i).run(o);
+  public NewInputMany(i: string, o: any[]) {
+    this.newInputHelper(i, o);
   }
 
-  // this should be read only
-  // FIXME: not sure how to enforce..
-  public IterateOverOriginalRelations(f: (r: OriginalRelation) => any) {
-    return this.ir.ast.originalRelations.map(f);
+  // FIXME: gotta do some run time type checking here!
+  // also fixme should use codegen and not string manipulation?
+  // very inefficient, fixme
+  public NewInput(i: string, o: any) {
+    this.newInputHelper(i, [o]);
+    // let tsI = Object.assign({$ts: timeNow()}, o);
+    // TODO: check if the objects match
+    // then add the dollar signs
+    // const inStmt = this.input.get(i);
+
+    // if (!inStmt) {
+    //   ReportUserRuntimeError(`Input ${i} not found`);
+    //   return;
+    // }
+    // const keys = Object.keys(o);
+    // let newO: any = {};
+    // keys.map(k => newO[`$${k}`] = o[k]);
+    // inStmt.run(newO);
+  }
+
+  private newInputHelper(i: string, objs: any[]) {
+    const r = this.ir.allOriginalRelations.get(i);
+    // ${r.columns.map(c => c.name).map(v => `$${v}`).join(", ")}
+    const rowQuerys = objs.map(o => {
+      let values = ["max(timestep)"];
+      r.columns.map(c => {
+        const raw = o[c.name];
+        if (typeof raw === "string") {
+          values.push(`'${raw}'`);
+        } else {
+          values.push(raw);
+        }
+      });
+      return `select ${values.join(",")} from allInputs`;
+    });
+    const insertQuery = `
+      insert into ${r.name} (timestep, ${r.columns.map(c => c.name).join(", ")})
+      ${rowQuerys.join("\nUNION\n")};
+      insert into allInputs (inputRelation) values ('${r.name}');
+      `;
+    this.db.exec(insertQuery);
+
   }
 
   /**
@@ -112,9 +162,11 @@ export default class DielRuntime {
     const runOutput = this.runOutput;
     const dependencies = this.ir.dependencies.inputDependencies;
     return (input: string) => {
+      // note for Lucie: add constraint checking
+      console.log(`%c tick ${input}`, "color: blue");
       const inputDep = dependencies.get(input);
       boundFns.map(b => {
-        if (inputDep.findIndex(iD => iD === b.outputName) > -1) {
+        if (inputDep.has(b.outputName)) {
           runOutput(b);
         }
       });
@@ -158,11 +210,7 @@ export default class DielRuntime {
     // now parse DIEL
     // below are logic for the physical execution of the programs
     // we first do the distribution
-    this.basicDistributedQueries();
-    // then materialization
-    this.materializeQueries();
-    // then caching
-    this.cacheQueries();
+    this.physicalExecution = CompilePhysicalExecution(this.ir, this.metaData);
     // now execute the physical views and programs
     this.executeToDBs();
     this.setupAllInputOutputs();
@@ -171,23 +219,25 @@ export default class DielRuntime {
 
   async initialCompile() {
     this.visitor = new Visitor();
-    let code = "";
-    const r = this.db.exec(`SELECT sql FROM sqlite_master WHERE type='table' and sql not null`);
-    if (r.length > 0) {
-      code = r[0].values.map(row => {
-        const queryWithReigster = (row[0] as string).replace(/create table/ig, "register table");
-        // THIS IS HACKY AF
-        // basically going to regex the create table to register table
-        return `${queryWithReigster};\n`;
-      }).join("");
-    }
+    const r = this.db.exec(SqliteMasterQuery);
+    let code = processSqliteMasterMetaData(r).queries;
+    let workerInfo = await this.workerPool.getMetaData();
+    workerInfo.forEach((e, i) => {
+      code += e.queries;
+      e.names.forEach((n) => this.metaData.set(n, {
+        location: TableLocation.Worker,
+        accessInfo: i
+      }));
+    });
+    console.log("got workerInfo", workerInfo);
     // TODO: for workers as well
     for (let i = 0; i < this.runtimeConfig.dielFiles.length; i ++) {
       const f = this.runtimeConfig.dielFiles[i];
       code += await (await fetch(f)).text();
     }
-    LogTmp(`Generated code looks like this: ${code}`);
     // read the files in now
+    const codeWithLine = code.split("\n");
+    console.log(`%c DIEL Code Generated:\n${codeWithLine.map((c, i) => `${i}\t${c}`).join("\n")}`, "color: green");
     const inputStream = new ANTLRInputStream(code);
     const p = new DIELParser(new CommonTokenStream(new DIELLexer(inputStream)));
     const tree = p.queries();
@@ -195,11 +245,38 @@ export default class DielRuntime {
     this.ir = CompileDiel(new DielIr(ast));
   }
 
+  async setupWorkerPool() {
+    this.workerPool = new WorkerPool(this.runtimeConfig.workerDbPaths, this);
+    await this.workerPool.setup();
+    return;
+  }
+
   setupUDFs() {
     this.db.create_function("log", log);
     this.db.create_function("tick", this.tick());
+    this.db.create_function("shipWorkerInput", this.shipWorkerInput.bind(this));
   }
 
+  // maybe change this to generating ASTs as opppsoed to strings?
+  shipWorkerInput(inputName: string) {
+    const shipDestination = this.physicalExecution.mainToWorker.get(inputName);
+    const shareQuery = `select * from ${inputName}`;
+    let tableRes = this.db.exec(shareQuery)[0];
+    if ((!tableRes) || (!tableRes.values)) {
+      LogWarning(`Query ${shareQuery} has NO result`);
+    }
+    // FIXME: have more robust typing here...
+    // need to make null explicit here...
+    // selection needs to have a quote around it...
+    const values = tableRes.values.map((d: any[]) => `(${d.map((v: any) => (v === null) ? "null" : `'${v}'`).join(", ")})`);
+    let sql = `
+      DELETE from ${inputName};
+      INSERT INTO ${inputName} VALUES ${values};
+    `;
+    shipDestination.forEach((v => {
+      this.workerPool.SendWorkerQuery(sql, WorkerCmd.ShareInputAfterTick, v);
+    }));
+  }
   /**
    * returns the DIEL code that will be ran to register the tables
    */
@@ -222,34 +299,9 @@ export default class DielRuntime {
     return;
   }
 
-  async setupWorkerPool() {
-    this.workerDbPool = [];
-    if (!this.runtimeConfig.workerDbPaths) {
-      this.workerDbPool.push(new Worker("./UI-dist/worker.sql.js"));
-    } else {
-      for (let i = 0; i < this.runtimeConfig.workerDbPaths.length; i++) {
-        const file = this.runtimeConfig.workerDbPaths[i];
-        const newWorker = new Worker("./UI-dist/worker.sql.js");
-        // also load the data in
-        const response = await fetch(file);
-        const bufferRaw = await response.arrayBuffer();
-        const buffer = new Uint8Array(bufferRaw);
-        newWorker.postMessage({
-          id: "opened",
-          action: "open",
-          buffer,
-        });
-        // TODO:
-        // find out what the relations are and put in metaData
-        this.workerDbPool.push(newWorker);
-      }
-    }
-    return;
-  }
-
   setupAllInputOutputs() {
-    this.ir.GetInputs().map(i => this.setupNewInput(i));
-    this.ir.GetOutputs().map(o => this.setupNewOutput(o));
+    // this.ir.GetInputs().map(i => this.setupNewInput(i));
+    this.ir.GetAllViews().map(o => this.setupNewOutput(o));
   }
   /**
    * output tables HAVE to be local tables
@@ -274,18 +326,14 @@ export default class DielRuntime {
 
   // FIXME: in the future we should create ASTs and generate it, as opposed to raw strings
   //   raw strings are faster, hack for now...
-  private setupNewInput(r: OriginalRelation) {
-    const insertQuery = `
-      insert into ${r.name} (timestep, ${r.columns.map(c => c.name).join(", ")})
-      select
-        max(timestep),
-        ${r.columns.map(c => c.name).map(v => `$${v}`).join(", ")}
-      from allInputs;`;
-    this.input.set(
-      r.name,
-      this.dbPrepare(insertQuery)
-    );
-  }
+  // private setupNewInput(r: OriginalRelation) {
+    
+  //   console.log(`%c Input query: ${insertQuery}`, "color: gray");
+  //   // this.input.set(
+  //   //   r.name,
+  //   //   this.dbPrepare(insertQuery)
+  //   // );
+  // }
 
   // TODO!
   async setupRemotes() {
@@ -327,37 +375,7 @@ export default class DielRuntime {
   }
 
 
-  /**
-   * assume that this will be the first one executed!
-   * FIXME:
-   * - deal with remotes
-   * - create async events
-   * this already lowers the IR to the SQLIr
-   */
-  basicDistributedQueries() {
-    // first walk through the outputs that make use of worker based tables
-    // then add to the input program to ship the relevant inputs over to the worker tables
-    // then query in worker tables
-    // then send the results back into main
-    // function newSqlIr(): SqlIr {
-    //   return {
-    //     views: [],
-    //     programs: [],
-    //   };
-    // }
-    const workers = new Map<string, SqlIr>();
-    const remotes = new Map<string, SqlIr>();
-    // for now just stick them all in there...
-    // FIXME: not working!
-    const main = createSqlIr(this.ir.ast);
-    // now put all the views that contain worker tables out into the respective workers
-    // just walk through the depTree and look up their names in the metaData part
-    this.physicalExecution = {
-      main,
-      workers,
-      remotes,
-    };
-  }
+
 
   materializeQueries() {
     // TODO
@@ -374,14 +392,32 @@ export default class DielRuntime {
   // also should fix the async logic
   executeToDBs() {
     LogTmp(`Executing queries to db`);
-    const mainSqlQUeries = generateSqlFromIr(this.physicalExecution.main);
+    const mainSqlQUeries = generateSqlFromDielAst(this.physicalExecution.main);
     for (let s of mainSqlQUeries) {
       try {
-        LogTmp(s);
+        console.log(`%c Running Query in Main:\n${s}`, "color: purple");
         this.db.run(s);
       } catch (error) {
         LogInternalError(`Error while running\n${s}\n${error}`);
       }
+    }
+    // now execute to worker!
+    this.physicalExecution.workers.forEach((v, k) => {
+      const sql = generateSqlFromDielAst(v).join(";\n");
+      console.log(`%c Running Query in Worker[${k}]:\n${sql}`, "color: pink");
+      this.workerPool.SendWorkerQuery(sql, WorkerCmd.InitialSetUp, k, false);
+    });
+  }
+  // used for debugging
+  inspectQueryResult(query: string) {
+    let r = this.db.exec(query)[0];
+    if (r) {
+      console.log(r.columns.join("\t"));
+      console.log(JSON.stringify(r.values).replace(/\],\[/g, "\n").replace("[[", "").replace("]]", "").replace(/,/g, "\t"));
+      // console.table(r.columns);
+      // console.table(r.values);
+    } else {
+      console.log("No results");
     }
   }
 }
